@@ -1,0 +1,10 @@
+.git
+.env
+data
+backups
+**/__pycache__
+**/*.py[cod]
+**/*.db
+**/*.db-wal
+**/*.db-shm
+**/*.db-journal

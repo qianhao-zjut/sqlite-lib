@@ -1,0 +1,434 @@
+# 记录库 PDR
+
+日期：2026-10-12
+状态：方向已定，项目目录已建立，尚未写代码
+读者：在本仓库开发的人和 Agent
+
+本文是本仓库的需求与设计基线，路径为 `doc/PDR-记录库.md`。聊天记录不算进度。实现以这份为准。
+
+暂定名称：**记录库**。仓库名可以另取，接口和数据模型以本文为准。
+
+## 1. 背景
+
+个人远程 Linux 服务器目前在跑几个很小的 Docker 程序。工作电脑上偶尔会有随手记，家庭电脑上有本地大模型，希望拿这些记录来分析。2026-10-12 对这台服务器做过一次实地检查，结论如下。
+
+机器是 2 核，内存一共 1.9 GiB。检查当时可用内存约 818 MiB，Swap 已用 1.0 GiB / 1.9 GiB。根分区 50G，已用 65%，剩余约 17G。负载接近空闲，但内存没有余量。`dockerd` 本身大约占 430 MiB。
+
+Docker 29.6.2 和 Compose v5.3.1 已安装，服务在运行。当时没有 Docker volume。在跑的容器：
+
+| 项目 | 服务 | 状态 | 端口 |
+|---|---|---|---|
+| show-myself | web | 已运行约 8 周，健康 | 主机 3000 → 容器 3000 |
+| show-myself | data-perms | 已退出 | 无 |
+| dz-pk | web | 已运行约 2 个月 | 主机 1111 → 容器 80 |
+| dz-pk | api | 已运行约 2 个月 | 仅容器内 3001 |
+
+另外有一个 6 个月前的 `hello-world` 镜像，没有对应容器。主机上还有 `caddy` 进程。本文不假定它的站点配置，部署时再核对。
+
+SQLite 的情况：命令行 `sqlite3` 没装。系统库 `libsqlite3` 是 3.45.1，`python3` 是 3.12.3，可以直接 `import sqlite3`，模块报告的 SQLite 版本也是 3.45.1。
+
+曾经考虑过在 Docker 里跑一个最小的单节点 Kafka，让工作电脑写入、家庭电脑订阅。最小堆内存按 256 MiB 估算，进程仍要占 450–700 MiB。以当时的可用内存，它能启动，启动后机器会继续吃 Swap。随手记和分析用的记录一年也就一批文本，用不上 Kafka 的吞吐、分区和消费位点。消费位点往前走之后，记录也不会留在服务器上供以后换着问。
+
+MySQL 同样不合适。它是常驻服务，要用户、端口和自己的内存。这台机器要的是一个文件，加上一个很瘦的读写入口。
+
+因此服务器只记账。分析放在家庭电脑的本地模型上。Docker 里的小程序和工作电脑的随手记都通过同一个入口追加记录。家庭电脑按游标把新行拉走。
+
+随手记、想法、新闻、交易记录都进这一份库。类型不同，表不拆。
+
+## 2. 要完成的事
+
+服务器上留下一份只追加的记录。写入方可以是现有的 Docker 小程序，也可以是工作电脑上的一条随手记。一条记录带类型：随手记、想法、新闻、交易记录，以及以后临时出现的其它类型。家庭电脑以后随时按编号把没看过的行取走，可以全部拿走，也可以只拿某一种，交给本地模型。同一批记录可以反复取、换着问。模型的结论默认留在家里。
+
+第一刀不改造 `show-myself` 和 `dz-pk`。先证明：写进一条、进程重启后还在、家里能按编号拉到。
+
+## 3. 谁在用
+
+三条使用路径，都调用第 9 节那一套 REST 接口。没有第二条写入通道，也没有专门的拉取协议。
+
+1. 服务器上的小程序 `POST /v1/records`。
+2. 人在工作电脑上补一条随手记，同样 `POST /v1/records`。
+3. 人在家庭电脑上 `GET /v1/records`，把返回的记录交给本地模型。模型不在服务器上跑。
+
+没有第四类用户，也没有账号体系。调用方靠一个共享令牌区分“是不是自己人”。
+
+## 4. 产品是什么
+
+记录库是一台服务器上的一个小进程，背后一个 SQLite 文件。
+
+对外只有这一套 HTTP 接口。业务程序不打开数据库文件，也不走第二套私有协议。`body` 只是记录上的一个字段，不是存取方式。
+
+它也不是消息队列。没有消费位点。拉走一条不会把它从库里删掉。
+
+多种数据类型共用这个进程、这一份文件。交易记录不会单独占一个库。
+
+## 5. 第一版不做
+
+- 不在这台服务器上部署 Kafka、ZooKeeper、MySQL，或任何分析模型。
+- 不改 `show-myself`、`dz-pk` 的现有功能。接入某个现有程序是第一刀之后的事。
+- 不做账号、多租户、按来源授权。
+- 不做修改和删除。写错了就再追加一条更正。
+- 不按数据类型拆表或拆库。
+- 不做全文检索、向量、标签系统和后台页面。
+- 不在服务器上按 `payload` 里的字段查询。要按股票代码筛交易，第一版在家庭电脑拉下来之后做。
+- 不把分析结论写回服务器。
+- 不把 SQLite 文件放到网络盘上，也不把文件本身拷给两台电脑当同步副本。
+- 不开放公网端口。第一版只监听本机。
+
+## 6. 决策
+
+### Decision: 用 SQLite 文件，不用独立数据库服务
+
+- Problem and constraints: 记录量小，机器可用内存大约 800 MiB，Swap 已经用了一半。需要断电或重启后数据还在。
+- Candidates: Kafka、MySQL、SQLite 文件、直接追加一个 JSONL 文件。
+- Current recommendation: 一个 SQLite 文件，由唯一的记录库进程打开。
+- Why this fits now: Python 3.12 已能调用 SQLite 3.45.1，不必再装数据库服务。JSONL 好追加，但按编号续拉、去重和崩溃后的完整性要自己做。SQLite 这些都有。
+- Reconsider when: 需要很多客户端同时高频率写入，或单文件超过约 1GB，或必须从公网多点同时写。
+- Explicit non-goals: 不把 SQLite 换成 MySQL 来“以后好扩展”。
+
+### Decision: 只有记录库进程能打开数据库文件
+
+- Problem and constraints: 写入方有多个容器和两台电脑。SQLite 在本机多进程写需要小心锁；跨机器直接打开文件不可行。
+- Candidates: 每个程序挂载同一个文件自己写；一个 HTTP 进程统一写。
+- Current recommendation: 只有记录库进程打开这个文件。其他程序调用它的 HTTP 接口。
+- Why this fits now: 写入次数低，多一个很瘦的进程比把锁散落到各个容器里清楚。
+- Reconsider when: 记录库和某个程序必须合成一个进程才能部署。即便如此，仍然只有一处打开文件。
+- Explicit non-goals: 不提供“把数据库文件路径配进业务容器”这种接入方式。
+
+### Decision: 只追加，用自增 id 当游标
+
+- Problem and constraints: 家庭电脑要能中断后继续拉，也要能把同一批记录重新交给模型。
+- Candidates: 消费位点、按时间拉取、按自增 id 拉取。
+- Current recommendation: `id` 为 SQLite `INTEGER PRIMARY KEY`。拉取参数是 `after_id`。响应里给出本批最大 id，调用方自己记住。
+- Why this fits now: 时间会乱序或重复，id 不会。没有消费位点，重复拉取是正常操作。
+- Reconsider when: 需要服务端记住“家里已经分析过哪些”。那是另一张表，不属于第一版。
+- Explicit non-goals: 不实现 Kafka 式的 consumer group。
+
+### Decision: 多种数据类型共用一张表
+
+- Problem and constraints: 同一份库要收下随手记、想法、新闻、交易记录，以及还没想好名字的其它记录。交易要能按价格和数量被重新分析，想法和新闻主要是一段文字。机器小，不能为每种类型起一个服务。
+- Candidates: 每种类型一张表；一种类型一个库；一张表，用 `kind` 区分，结构化字段放 JSON。
+- Current recommendation: 一张 `records` 表。`kind` 是类型名。`body` 始终是给模型读的纯文本。`payload` 是可选 JSON，只放该类型才有的字段。已登记的类型在写入时检查必填字段。没登记的类型，只要 `kind` 合法、`body` 非空、`payload` 若出现则必须是 JSON 对象，就接受。
+- Why this fits now: 家庭电脑的主路径是按顺序把新行拉走。拆表会把这个路径拆碎。交易记录如果只有一段自由文字，以后就无法稳定地取出价格和数量。没登记也允许写入，这样「其它」不必先改表、先发版。
+- Reconsider when: 某一种类型要在服务器上按自己的字段频繁筛选，或单种记录的写入量已经盖过其它所有类型。那时再为那一种单独加表，不提前拆。
+- Explicit non-goals: 不建 `trades`、`ideas`、`news` 三张业务表。不把 `payload` 展开成列。
+
+### Decision: 存和取都走同一套 REST 资源
+
+- Problem and constraints: 写入方有小程序和工作电脑，读取方是家庭电脑，类型有随手记、想法、新闻、交易和未登记类型。若把「存」和「拉」写成两套说明，调用方会各自发明路径。
+- Candidates: 每种类型一组路径，例如 `/v1/trades`；一个集合 `/v1/records`，用 `kind` 区分；另做一套仅供同步的私有接口。
+- Current recommendation: 只有资源 `records`。创建用 `POST /v1/records`，列出用 `GET /v1/records`，读取一条用 `GET /v1/records/{id}`。已登记类型的目录用 `GET /v1/kinds`。不提供 `PUT`、`PATCH`、`DELETE`。
+- Why this fits now: 调用方学习一个集合就够。按类型过滤是查询参数，不是另一套接口。`after_id` 也只是这个集合上的查询参数，用来从上次看到的 id 之后继续取。
+- Reconsider when: 某一种类型的字段多到无法放进同一个 JSON 表示，或确实需要更新已有行。
+- Explicit non-goals: 不为 `note`、`idea`、`news`、`trade` 各做一组 CRUD。不增加 `/pull`、`/store`、`/sync` 这类动词路径。
+
+### Decision: 分析留在家庭电脑
+
+- Problem and constraints: 服务器 1.9 GiB 内存，本地模型放不上去。
+- Candidates: 服务器上跑模型；家庭电脑拉取原文后本地分析。
+- Current recommendation: 服务器只保存原文。家庭电脑拉取后自行调用本地模型。
+- Why this fits now: 模型和提示词会变，原文留下就能重跑。
+- Reconsider when: 服务器内存和磁盘都足够跑指定模型，并且确实要把分析放到服务器上。
+- Explicit non-goals: 第一版不保存模型名称、提示词和分析结果。
+
+### Decision: Python 标准库实现，不引入 Web 框架
+
+- Problem and constraints: 服务器已有 Python 3.12.3 和 `sqlite3`。请求量是人的随手记加上几个小程序的偶发写入。
+- Candidates: Python 标准库、FastAPI/Flask、Go、单独的 sqlite CLI 脚本。
+- Current recommendation: 一个 Python 进程，使用标准库 `sqlite3` 和 `http.server.ThreadingHTTPServer`。
+- Why this fits now: 少一层依赖，镜像和内存都好控制。`sqlite3` 命令行目前没装，不依赖它。
+- Reconsider when: 接口需要上传文件、流式响应，或标准库 HTTP 实现开始挡验收。
+- Explicit non-goals: 不为了“正规”先引入框架。
+
+### Decision: 第一版只监听本机
+
+- Problem and constraints: 这台机器的 3000 和 1111 已经对主机端口开放。记录正文会进模型，不能先裸奔到公网上。
+- Candidates: 公网端口加令牌、接到现有 caddy 上、只绑定 127.0.0.1。
+- Current recommendation: 容器端口映射为 `127.0.0.1:<端口>:8787`。同一台机器上的其他容器走 Docker 网络访问服务名。工作电脑和家庭电脑用 SSH 本地转发访问。
+- Why this fits now: 不新增公网攻击面。令牌仍然要校验，避免本机上别的程序误写。
+- Reconsider when: SSH 转发经实际使用证明太碍事。那时再接到已有的 caddy，用 HTTPS，而不是直接把 8787 公布到 `0.0.0.0`。
+- Explicit non-goals: 第一版不修改 caddy 配置。
+
+## 7. 运行约束
+
+这些数字来自 2026-10-12 的检查，开工时再核一次。机器状态变了就改本文，不要沿用过期数字做部署决定。
+
+- 内存上限：容器 `--memory=128m`。进程常态 RSS 目标低于 80 MiB。超过这个上限就停下来查，不要把上限调到 512 MiB 硬扛。
+- 磁盘：数据库目录用主机目录的 bind mount。不要用匿名 volume，否则重建容器时说不清文件在哪。
+- 端口：避开 3000、1111、3001。容器内监听 8787，主机侧只绑定 127.0.0.1。主机端口若与现网冲突，改映射，不改接口。
+- 写入频率按“人可以手工看完”设计。不做批量导入通道。
+- 单条 `body` 最大 64 KiB。单条 `payload` 序列化后最大 16 KiB。更大的内容先被拒绝，避免一条记录把模型和进程一起撑住。
+- 单次拉取默认 50 条，最大 100 条。
+
+## 8. 数据
+
+文件位置在部署时确定，进程启动时创建。建议目录只放这一份库和它的备份，不和 `show-myself`、`dz-pk` 的目录混放。
+
+连接建立后立刻执行：
+
+```sql
+PRAGMA journal_mode = WAL;
+PRAGMA synchronous = FULL;
+PRAGMA busy_timeout = 5000;
+PRAGMA foreign_keys = ON;
+```
+
+`synchronous = FULL` 是有意的。写入很少，少丢最后一次提交比快几毫秒重要。
+
+```sql
+CREATE TABLE records (
+  id          INTEGER PRIMARY KEY,
+  source      TEXT NOT NULL,
+  kind        TEXT NOT NULL,
+  body        TEXT NOT NULL,
+  payload     TEXT,
+  created_at  TEXT NOT NULL,
+  ingested_at TEXT NOT NULL,
+  client_key  TEXT UNIQUE
+);
+
+CREATE INDEX idx_records_kind_id ON records (kind, id);
+```
+
+- `id` 只由数据库分配，调用方不能指定。
+- `source` 表示谁写的，例如 `manual`、`show-myself`、`dz-pk`。第一版不设枚举，调用方自己保持稳定拼写。
+- `kind` 表示数据类型，见下文。接口里用英文短名，不用中文。
+- `body` 是交给模型的正文，纯文本。每种类型都要有。交易记录也要写一句人能读懂的话，不能只丢一个 JSON。
+- `payload` 可空。入库时存 JSON 文本，取出时还原成对象。没有则是 `null`。服务器不按里面的键做查询。
+- `created_at` 是事情发生的时间，ISO 8601 UTC，由调用方提供。没提供时，服务器填与 `ingested_at` 相同的值。
+- `ingested_at` 只由服务器填写。
+- `client_key` 可选，全局唯一，不分类型。相同 `client_key` 再次提交时，返回已有记录的 `id`，不插入第二行。工作电脑重试时靠这个去重。
+
+另有一张表记录结构版本，第一版版本号为 1。以后改表先改版本，再改进程。
+
+不建更新时间，不建删除标记。
+
+### 8.1 类型
+
+`kind` 匹配 `^[a-z][a-z0-9_-]{0,31}$`。不符合的请求返回 `400`。
+
+已登记的类型会检查字段。没登记的类型直接收下，这就是「其它」的入口，不必为了一个新名字先发版。
+
+| kind | 含义 | 必填 | payload |
+|---|---|---|---|
+| `note` | 随手记 | `body` | 可省略 |
+| `idea` | 想法 | `body` | 可省略 |
+| `news` | 新闻 | `body` | 可省略。若带了 `payload`，里面必须有非空 `title`。`url` 可有可无 |
+| `trade` | 交易记录 | `body` 和 `payload` | 必须含 `symbol`（非空字符串）、`side`（`buy` 或 `sell`）、`qty`（大于 0 的数）、`price`（大于等于 0 的数）。`currency`、`fee`、`account` 可有可无 |
+
+分红、转账、申购不写入 `trade`。需要时用新的 `kind`，例如 `dividend`。没登记也能先写入。
+
+`trade` 的 `body` 由调用方写，服务器不根据 `payload` 再生成一句。建议格式：`买入 100 股 600519，价格 1680 CNY`。模型先读这句话；要算账时再读 `payload`。
+
+## 9. 接口
+
+数据进出只有下表这些方法。小程序、工作电脑、家庭电脑用同一组路径。SSH 转发只解决「请求如何到达本机端口」，不是另一种接口。
+
+监听地址是容器内的 `0.0.0.0:8787`，发布到主机时收成 `127.0.0.1`。除 `GET /health` 外，请求都带：
+
+```http
+Authorization: Bearer <token>
+Content-Type: application/json
+```
+
+令牌来自环境变量，不进代码仓库，不进镜像。缺失、错误一律 `401`，响应正文不区分这两种情况。
+
+| 方法 | 路径 | 作用 |
+|---|---|---|
+| `POST` | `/v1/records` | 新增一条记录 |
+| `GET` | `/v1/records` | 列出记录 |
+| `GET` | `/v1/records/{id}` | 读取一条 |
+| `GET` | `/v1/kinds` | 列出已登记类型 |
+| `GET` | `/health` | 进程是否在听 |
+
+没有 `PUT`、`PATCH`、`DELETE`。写错了再 `POST` 一条新记录。
+
+错误响应统一为：
+
+```json
+{"error": "validation_error", "message": "trade payload requires price"}
+```
+
+`error` 只用这几个值：`unauthorized`（401）、`validation_error`（400）、`payload_too_large`（413）、`not_found`（404）。`message` 给人看，调用方只依赖 `error` 和状态码。
+
+一条记录在三个读接口里的形状相同：
+
+```json
+{
+  "id": 4,
+  "source": "manual",
+  "kind": "trade",
+  "body": "买入 100 股 600519，价格 1680 CNY",
+  "payload": {
+    "symbol": "600519",
+    "side": "buy",
+    "qty": 100,
+    "price": 1680,
+    "currency": "CNY"
+  },
+  "created_at": "2026-10-12T01:30:00Z",
+  "ingested_at": "2026-10-12T01:30:02Z"
+}
+```
+
+没有 `payload` 时，该字段为 `null`。
+
+### POST /v1/records
+
+```http
+POST /v1/records
+Content-Type: application/json
+
+{
+  "source": "manual",
+  "kind": "note",
+  "body": "今天把超时从 3 秒改成 8 秒",
+  "created_at": "2026-10-12T08:00:00Z",
+  "client_key": "work:2026-10-12T08:00:00Z:1"
+}
+```
+
+`source`、`kind`、`body` 必填，且去掉首尾空白后不能是空字符串。`created_at`、`client_key`、`payload` 可省略，但 `trade` 不能省略 `payload`。`payload` 若出现，必须是 JSON 对象，不能是数组或字符串。
+
+成功插入返回 `201`，响应头带 `Location: /v1/records/1`，正文是完整记录，不是只含 `id`。
+
+`client_key` 已存在时返回 `200` 和原来的那条完整记录，不插入第二行，也不修改旧行。
+
+校验失败返回 `400`。`body` 超过 64 KiB，或 `payload` 超过 16 KiB，返回 `413`。
+
+交易记录用同一个路径，只是 `kind` 和 `payload` 不同：
+
+```json
+{
+  "source": "manual",
+  "kind": "trade",
+  "body": "买入 100 股 600519，价格 1680 CNY",
+  "created_at": "2026-10-12T01:30:00Z",
+  "client_key": "trade:2026-10-12:600519:1",
+  "payload": {
+    "symbol": "600519",
+    "side": "buy",
+    "qty": 100,
+    "price": 1680,
+    "currency": "CNY"
+  }
+}
+```
+
+### GET /v1/records
+
+```http
+GET /v1/records?after_id=0&limit=50
+GET /v1/records?after_id=0&kind=trade&limit=50
+```
+
+`after_id` 省略时按 0。返回 `id` 大于该值的记录，按 `id` 升序。`kind` 省略时返回所有类型。
+
+```json
+{
+  "records": [],
+  "next_after_id": 4
+}
+```
+
+`records` 里每项都是上面的完整记录。没有命中的新行时，`records` 为空数组，`next_after_id` 等于请求里的 `after_id`。不要因为库里已经有别的类型的更大 `id`，就把 `next_after_id` 推过去。否则带 `limit` 时会漏掉还没返回的同类型记录。
+
+`next_after_id` 是这个列表响应里的继续位置，调用方下次把它放回 `after_id`。服务器不保存调用方的进度。混在一起读，就记一个数，请求里不带 `kind`。只读交易或只读想法，就按 `kind` 各记一个数。要重读时，把本地的数调小或调回 0。
+
+### GET /v1/records/{id}
+
+返回这一条的完整记录，`200`。`id` 不存在返回 `404`。
+
+### GET /v1/kinds
+
+返回已登记类型，不扫描库里出现过的未登记 `kind`。
+
+```json
+{
+  "kinds": [
+    {"kind": "note", "payload": "optional"},
+    {"kind": "idea", "payload": "optional"},
+    {"kind": "news", "payload": "optional"},
+    {"kind": "trade", "payload": "required"}
+  ]
+}
+```
+
+未登记类型仍然可以 `POST`。这个接口只告诉调用方哪些类型会做字段检查。
+
+### GET /health
+
+不需要令牌。返回 `200` 和 `{"ok": true}`。它不读取记录，也不可用来探测令牌是否正确。
+
+## 10. 安全与备份
+
+令牌只放在服务器的环境变量，以及工作电脑、家庭电脑自己的本地配置里。日志里不打印令牌，也不打印 `body` 和 `payload`。交易记录里会有标的、价格和数量。访问日志只留时间、方法、路径、状态码和记录 id。
+
+备份用 SQLite 的 backup API 写出一份一致的快照，不用在 WAL 模式下直接 `cp` 正在写的库文件。第一版提供一条可手动运行的备份命令，把快照写到同一台机器的另一个目录。这不能防磁盘坏掉。把快照拷离这台服务器，放到第二刀，和第一个业务程序接入一起排期，不塞进第一刀。
+
+第一版没有删除接口。要清数据时，停进程，把数据库文件挪走，再启动。这个动作要人确认，不做成程序里的命令。
+
+## 11. 里程碑
+
+每一刀都能单独部署、单独验收。上一刀没有在服务器上跑通，不开始下一刀。
+
+### M1：写一条，重启还在，家里拉得到
+
+包含：建库、第 9 节全部方法、已登记类型的字段检查、未登记类型可写入、令牌、`client_key` 去重、128 MiB 内存限制、bind mount、手动备份命令。
+
+不包含：改造现有 Docker 程序，图形界面，模型调用，公网入口。
+
+验收时对同一路径 `POST` 一条 `note` 和一条 `trade`，重启容器后 `GET /v1/records` 仍能看到两条，`GET /v1/records/{id}` 能读到其中一条。`kind=trade` 时只有交易。缺 `price` 的交易返回 `400` 和 `validation_error`。没登记过的合法 `kind` 可以 `POST`。`GET /v1/kinds` 只列出已登记的四种。从家庭电脑经 SSH 转发调用同一个 `GET`，正文一致。错误令牌得到 `401`。重复的 `client_key` 不产生第二行。不存在的 id 得到 `404`。
+
+### M2：一个现有程序真正写入
+
+选 `show-myself` 或 `dz-pk` 里一个已经在产生文本的点，改那一处，让它 `POST /v1/records`。选哪个在 M1 完成后再定，不在本文里猜。
+
+验收时，那个程序的一次真实操作会在记录库里出现一行，`source` 能看出是它写的。原程序的原有页面和接口仍按改造前的方式可用。
+
+### M3：家庭电脑上的拉取脚本
+
+一个本地脚本记住游标，拉出新行，输出成适合粘贴给本地模型的文本。默认一个游标拉全部类型。脚本要能改成只拉一种 `kind`，并为这种类型单独记住游标。脚本不调用模型，不把结论上传。
+
+验收时，连续跑两次：第一次打出新行并记住游标，第二次没有新行时输出为空。把游标改回 0 后能再次打出旧行。只拉 `trade` 时，输出里有 `body`，也有 `payload` 里的价格和数量，且不含想法和新闻。
+
+## 12. 测试与放行
+
+令牌、去重、游标和重启后的数据属于高风险行为。M1 先写失败测试，再写实现。至少覆盖：
+
+- 缺字段、空正文、超长正文、超大 `payload`
+- `trade` 缺少 `symbol`、`side`、`qty`、`price`，以及 `side` 不是 `buy` 或 `sell`
+- `news` 带了 `payload` 但没有 `title`
+- 未登记但合法的 `kind` 可以写入；不合法的 `kind` 返回 `400`
+- 无令牌、错误令牌、`/health` 不要求令牌
+- 相同 `client_key` 只有一行，且不分类型
+- `after_id` 分页顺序和 `next_after_id`
+- `kind=trade` 时不返回其它类型；本页之间夹着别的类型时，不能把那些类型的 id 跳过到漏掉下一条交易
+- 过滤结果为空时，`next_after_id` 保持为请求中的 `after_id`
+- 进程重启后行还在，`payload` 与写入时一致
+- 备份快照能用 SQLite 打开，并且行数与原库一致
+
+M1 的完成以服务器上的验收为准，不以本机单元测试通过为准。部署用的镜像或进程必须在这台 1.9 GiB 的机器上启动，并满足第 7 节的内存上限。
+
+## 13. 开工时还要补的文件
+
+设计规格已经在 `doc/PDR-记录库.md`。开始写代码前再补这三份，不要改本文里已经定下的接口和数据模型：
+
+1. 写 `README.md`，只说明这个服务做什么、如何在服务器上启动、调用方如何通过 SSH 转发访问。
+2. 写 `doc/STATUS.md`，标明当前处于 M1，以及还没有部署。
+3. 写 `AGENTS.md`，写明：不打印服务器 IP、用户名、令牌；不在未经同意时删除数据库文件；不把令牌写进仓库。
+
+`ai-use-test` 里还有一份同名草稿。两份若以后不一致，以本仓库这份为准。
+
+## 14. 开工前不必再讨论的事
+
+下面几件已经定了，后续实现不要改口，除非先改本文：
+
+- 服务器记账，家庭电脑分析。
+- 一个 SQLite 文件，一个写入进程。
+- 只追加，用 `id` 续拉。
+- 多种数据类型共用一张表。`kind` 区分类型，`body` 给人读，`payload` 放结构化字段。
+- 存和取只有 `/v1/records` 这一套 REST 资源。
+- 第一版不监听公网。
+- 第一版不接入现有的两个 Docker 项目。
+
+还没定、但不挡住 M1 的只有一件：M2 先接 `show-myself` 还是 `dz-pk`。
