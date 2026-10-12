@@ -57,7 +57,6 @@ class ApiTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.db_path = os.path.join(self.tmp.name, "records.db")
-        self.token = "test-token"
         self.httpd = None
         self.thread = None
         self.db = None
@@ -68,7 +67,7 @@ class ApiTest(unittest.TestCase):
 
     def start(self):
         self.db = Database(self.db_path)
-        self.httpd = RecordHTTPServer(("127.0.0.1", 0), self.db, self.token)
+        self.httpd = RecordHTTPServer(("127.0.0.1", 0), self.db)
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
         self.thread.start()
         host, port = self.httpd.server_address
@@ -85,15 +84,13 @@ class ApiTest(unittest.TestCase):
         self.db.close()
         self.db = None
 
-    def request(self, method, path, payload=None, *, token=None, auth=True, raw=None, content_type="application/json"):
+    def request(self, method, path, payload=None, *, raw=None, content_type="application/json"):
         headers = {}
         data = raw
         if data is None and payload is not None:
             data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         if data is not None:
             headers["Content-Type"] = content_type
-        if auth:
-            headers["Authorization"] = f"Bearer {self.token if token is None else token}"
         req = urllib.request.Request(self.base + path, data=data, headers=headers, method=method)
         try:
             with urllib.request.urlopen(req, timeout=5) as resp:
@@ -326,36 +323,19 @@ class ApiTest(unittest.TestCase):
         names = [item["kind"] for item in kinds.json["kinds"]]
         self.assertNotIn("dividend", names)
 
-    def test_auth_and_health(self):
-        health = self.request("GET", "/health", auth=False)
+    def test_open_access_and_health(self):
+        health = self.request("GET", "/health")
         self.assertEqual(health.status, 200)
         self.assertEqual(health.json, {"ok": True})
-        wrong_health = self.request("GET", "/health", token="wrong-token")
-        self.assertEqual(wrong_health.status, 200)
-        self.assertEqual(wrong_health.json, {"ok": True})
 
-        bodies = []
-        calls = [
-            ("GET", "/v1/records", None, False, None),
-            ("GET", "/v1/records", None, True, "wrong-token"),
-            ("POST", "/v1/records", {"source": "manual", "kind": "note", "body": "x"}, False, None),
-            ("GET", "/v1/kinds", None, True, "other-wrong"),
-            ("GET", "/v1/records/1", None, False, None),
-        ]
-        for method, path, payload, auth, token in calls:
-            with self.subTest(method=method, path=path, auth=auth):
-                resp = self.request(method, path, payload, auth=auth, token=token)
-                self.assertEqual(resp.status, 401)
-                self.assertEqual(resp.json["error"], "unauthorized")
-                bodies.append(resp.body)
-                self.assertNotIn(b"wrong-token", resp.body)
-                self.assertNotIn(self.token.encode(), resp.body)
-        self.assertEqual(len(set(bodies)), 1)
+        listed = self.request("GET", "/v1/records")
+        self.assertEqual(listed.status, 200)
+        self.assertEqual(listed.json["records"], [])
 
-        basic = self.request("GET", "/v1/records", auth=False)
-        basic_header = self.request("GET", "/v1/records", token="")
-        # Empty bearer is still unauthorized and matches the missing-header body.
-        self.assertEqual(basic.body, basic_header.body)
+        created = self.post({"source": "manual", "kind": "note", "body": "no token"})
+        self.assertEqual(created.status, 201)
+        kinds = self.request("GET", "/v1/kinds")
+        self.assertEqual(kinds.status, 200)
 
     def test_client_key_dedup_across_kinds(self):
         first = self.post(
@@ -623,7 +603,6 @@ class ApiTest(unittest.TestCase):
         text = buf.getvalue()
         self.assertNotIn("unique-body-text-should-not-log", text)
         self.assertNotIn("unique-payload-should-not-log", text)
-        self.assertNotIn(self.token, text)
         self.assertIn("POST", text)
         self.assertIn("/v1/records", text)
         self.assertIn("201", text)
@@ -674,20 +653,29 @@ class SchemaTest(unittest.TestCase):
 
 
 class ProcessTest(unittest.TestCase):
-    def test_main_requires_token(self):
+    def test_main_starts_without_token(self):
         env = os.environ.copy()
-        env["RECORD_TOKEN"] = ""
-        env.pop("RECORD_DB", None)
-        proc = subprocess.run(
+        env.pop("RECORD_TOKEN", None)
+        env["RECORD_HOST"] = "127.0.0.1"
+        env["RECORD_PORT"] = "0"
+        env["RECORD_DB"] = os.path.join(tempfile.mkdtemp(), "records.db")
+        proc = subprocess.Popen(
             [sys.executable, "-m", "recordstore"],
             cwd=ROOT,
             env=env,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
         )
-        self.assertEqual(proc.returncode, 1)
-        self.assertIn("RECORD_TOKEN is required", proc.stderr)
-        self.assertNotIn("Bearer", proc.stderr)
+        try:
+            line = proc.stdout.readline()
+            self.assertIn("listening on 127.0.0.1:0", line)
+            self.assertIsNone(proc.poll())
+        finally:
+            proc.terminate()
+            proc.wait(timeout=5)
+            proc.stdout.close()
+            proc.stderr.close()
 
     def test_backup_cli_usage(self):
         proc = subprocess.run(

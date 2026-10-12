@@ -1,6 +1,5 @@
 """HTTP API on the stdlib threading server."""
 
-import hmac
 import json
 import os
 import re
@@ -30,10 +29,9 @@ class RecordHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, server_address, db: Database, token: str):
+    def __init__(self, server_address, db: Database):
         super().__init__(server_address, RecordHandler)
         self.db = db
-        self.token = token
 
 
 class RecordHandler(BaseHTTPRequestHandler):
@@ -71,12 +69,6 @@ class RecordHandler(BaseHTTPRequestHandler):
         try:
             if self.command == "GET" and path == "/health":
                 self._send_json(200, {"ok": True})
-                return
-            if not _authorized(self.headers.get("Authorization"), self.server.token):
-                self._send_json(
-                    401,
-                    {"error": "unauthorized", "message": "unauthorized"},
-                )
                 return
             if self.command == "POST" and path == "/v1/records":
                 self._post_record()
@@ -194,18 +186,6 @@ def _not_found() -> dict:
     return {"error": "not_found", "message": "not found"}
 
 
-def _authorized(header, expected: str) -> bool:
-    if not header or not expected:
-        return False
-    parts = header.split(" ", 1)
-    if len(parts) != 2 or parts[0].lower() != "bearer":
-        return False
-    given = parts[1].strip()
-    if given == "":
-        return False
-    return hmac.compare_digest(given, expected)
-
-
 def _query_values(path: str) -> dict:
     return urllib.parse.parse_qs(
         urllib.parse.urlsplit(path).query,
@@ -236,16 +216,7 @@ def _query_kind(path: str):
     return kind
 
 
-def load_token() -> str:
-    token = os.environ.get("RECORD_TOKEN", "").strip()
-    if token == "":
-        sys.stderr.write("RECORD_TOKEN is required\n")
-        raise SystemExit(1)
-    return token
-
-
 def main() -> None:
-    token = load_token()
     db_path = os.environ.get("RECORD_DB", os.path.join("data", "records.db"))
     host = os.environ.get("RECORD_HOST", "127.0.0.1")
     try:
@@ -254,7 +225,7 @@ def main() -> None:
         sys.stderr.write("RECORD_PORT must be an integer\n")
         raise SystemExit(1) from None
     db = Database(db_path)
-    httpd = RecordHTTPServer((host, port), db, token)
+    httpd = RecordHTTPServer((host, port), db)
 
     def stop(_signum, _frame):
         threading.Thread(target=httpd.shutdown, daemon=True).start()

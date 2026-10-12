@@ -5,9 +5,8 @@ services:
     mem_limit: 128m
     memswap_limit: 128m
     ports:
-      - "127.0.0.1:8787:8787"
+      - "8787:8787"
     environment:
-      RECORD_TOKEN: ${RECORD_TOKEN:?RECORD_TOKEN is required}
       RECORD_DB: /data/records.db
       RECORD_HOST: 0.0.0.0
       RECORD_PORT: "8787"
