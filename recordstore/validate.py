@@ -1,7 +1,6 @@
 """Request checks for POST /v1/records."""
 
 import json
-import math
 import re
 from datetime import datetime
 
@@ -19,7 +18,7 @@ REGISTERED_KINDS = (
     {"kind": "note", "payload": "optional"},
     {"kind": "idea", "payload": "optional"},
     {"kind": "news", "payload": "optional"},
-    {"kind": "trade", "payload": "required"},
+    {"kind": "trade", "payload": "optional"},
 )
 REGISTERED_KIND_NAMES = {item["kind"] for item in REGISTERED_KINDS}
 
@@ -107,43 +106,11 @@ def _payload_text(kind: str, obj: dict):
 
 
 def _check_kind_payload(kind: str, payload):
-    if kind == "trade":
-        _check_trade(payload)
-        return
     if kind == "news" and payload is not None:
         _check_news(payload)
-        return
-    if payload is not None and not isinstance(payload, dict):
-        raise AppError(400, "validation_error", "payload must be a JSON object")
 
 
 def _check_news(payload: dict):
     title = payload.get("title")
     if not isinstance(title, str) or title.strip() == "":
         raise AppError(400, "validation_error", "news payload requires title")
-
-
-def _check_trade(payload):
-    if not isinstance(payload, dict):
-        raise AppError(400, "validation_error", "trade payload is required")
-    symbol = payload.get("symbol")
-    if not isinstance(symbol, str) or symbol.strip() == "":
-        raise AppError(400, "validation_error", "trade payload requires symbol")
-    if payload.get("side") not in ("buy", "sell"):
-        raise AppError(400, "validation_error", "trade payload requires side")
-    if not _positive_number(payload.get("qty")):
-        raise AppError(400, "validation_error", "trade payload requires qty")
-    if not _non_negative_number(payload.get("price")):
-        raise AppError(400, "validation_error", "trade payload requires price")
-
-
-def _is_number(value) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
-
-
-def _positive_number(value) -> bool:
-    return _is_number(value) and value > 0
-
-
-def _non_negative_number(value) -> bool:
-    return _is_number(value) and value >= 0

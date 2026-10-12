@@ -223,79 +223,35 @@ class ApiTest(unittest.TestCase):
         self.assertIn("a" * BODY_MAX_BYTES, bodies)
         self.assertNotIn("a" * (BODY_MAX_BYTES + 1), bodies)
 
-    def test_trade_payload_rules(self):
-        base = trade_payload()
-        missing = {
-            "symbol": "trade payload requires symbol",
-            "side": "trade payload requires side",
-            "qty": "trade payload requires qty",
-            "price": "trade payload requires price",
-        }
-        for field, message in missing.items():
-            with self.subTest(field=field):
-                payload = dict(base)
-                del payload[field]
-                resp = self.post(
-                    {"source": "manual", "kind": "trade", "body": "bad trade", "payload": payload}
-                )
-                self.assertEqual(resp.status, 400)
-                self.assertEqual(resp.json["error"], "validation_error")
-                self.assertEqual(resp.json["message"], message)
+    def test_trade_is_a_label(self):
+        text_only = self.post({"source": "manual", "kind": "trade", "body": "买入，没写价格"})
+        self.assertEqual(text_only.status, 201)
+        self.assertEqual(text_only.json["kind"], "trade")
+        self.assertEqual(text_only.json["body"], "买入，没写价格")
+        self.assertIsNone(text_only.json["payload"])
 
-        bad_values = [
-            ("side", "hold"),
-            ("side", "BUY"),
-            ("side", ""),
-            ("symbol", ""),
-            ("symbol", "   "),
-            ("symbol", 600519),
-            ("qty", 0),
-            ("qty", -1),
-            ("qty", "100"),
-            ("qty", True),
-            ("price", -0.01),
-            ("price", "1680"),
-            ("price", False),
-        ]
-        for field, value in bad_values:
-            with self.subTest(field=field, value=value):
-                payload = dict(base)
-                payload[field] = value
-                resp = self.post(
-                    {"source": "manual", "kind": "trade", "body": "bad trade", "payload": payload}
-                )
-                self.assertEqual(resp.status, 400)
-                self.assertEqual(resp.json["error"], "validation_error")
-                self.assertIn(field, resp.json["message"])
-
-        no_payload = self.post({"source": "manual", "kind": "trade", "body": "only text"})
-        self.assertEqual(no_payload.status, 400)
-        self.assertEqual(no_payload.json["error"], "validation_error")
+        partial = self.post(
+            {
+                "source": "manual",
+                "kind": "trade",
+                "body": "只有代码",
+                "payload": {"symbol": "600519"},
+            }
+        )
+        self.assertEqual(partial.status, 201)
+        self.assertEqual(partial.json["payload"], {"symbol": "600519"})
 
         null_payload = self.post(
             {"source": "manual", "kind": "trade", "body": "only text", "payload": None}
         )
-        self.assertEqual(null_payload.status, 400)
+        self.assertEqual(null_payload.status, 201)
+        self.assertIsNone(null_payload.json["payload"])
 
         array_payload = self.post(
             {"source": "manual", "kind": "trade", "body": "only text", "payload": [1, 2]}
         )
-        # Sent as a normal JSON value inside the object, so this is an array payload.
         self.assertEqual(array_payload.status, 400)
         self.assertEqual(array_payload.json["error"], "validation_error")
-
-        ok = self.post(
-            {
-                "source": "manual",
-                "kind": "trade",
-                "body": "卖出 1 股 600519，价格 0 CNY",
-                "payload": {"symbol": "600519", "side": "sell", "qty": 1.5, "price": 0},
-            }
-        )
-        self.assertEqual(ok.status, 201)
-        self.assertEqual(ok.json["payload"]["price"], 0)
-        self.assertEqual(ok.json["payload"]["qty"], 1.5)
-        self.assertEqual(ok.json["payload"]["side"], "sell")
 
     def test_news_payload_title(self):
         missing = self.post(
@@ -363,7 +319,7 @@ class ApiTest(unittest.TestCase):
                     {"kind": "note", "payload": "optional"},
                     {"kind": "idea", "payload": "optional"},
                     {"kind": "news", "payload": "optional"},
-                    {"kind": "trade", "payload": "required"},
+                    {"kind": "trade", "payload": "optional"},
                 ]
             },
         )

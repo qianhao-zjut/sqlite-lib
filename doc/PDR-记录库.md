@@ -105,10 +105,10 @@ MySQL 同样不合适。它是常驻服务，要用户、端口和自己的内�
 
 ### Decision: 多种数据类型共用一张表
 
-- Problem and constraints: 同一份库要收下随手记、想法、新闻、交易记录，以及还没想好名字的其它记录。交易要能按价格和数量被重新分析，想法和新闻主要是一段文字。机器小，不能为每种类型起一个服务。
+- Problem and constraints: 同一份库要收下随手记、想法、新闻、交易记录，以及还没想好名字的其它记录。这些都是一段文字加一个标签。机器小，不能为每种类型起一个服务。
 - Candidates: 每种类型一张表；一种类型一个库；一张表，用 `kind` 区分，结构化字段放 JSON。
-- Current recommendation: 一张 `records` 表。`kind` 是类型名。`body` 始终是给模型读的纯文本。`payload` 是可选 JSON，只放该类型才有的字段。已登记的类型在写入时检查必填字段。没登记的类型，只要 `kind` 合法、`body` 非空、`payload` 若出现则必须是 JSON 对象，就接受。
-- Why this fits now: 家庭电脑的主路径是按顺序把新行拉走。拆表会把这个路径拆碎。交易记录如果只有一段自由文字，以后就无法稳定地取出价格和数量。没登记也允许写入，这样「其它」不必先改表、先发版。
+- Current recommendation: 一张 `records` 表。`kind` 是标签。`body` 始终是给模型读的纯文本。`payload` 可选，出现时必须是 JSON 对象，服务器不检查里面的键。`news` 是例外：带了 `payload` 时要有非空 `title`。交易记录和随手记一样，只靠 `kind` 区分。
+- Why this fits now: 家庭电脑的主路径是按顺序把新行拉走，再按标签分开看。交易记录先记成一段文字，价格和数量不在服务器上卡格式。没登记的标签也可以写入，这样「其它」不必先改表、先发版。
 - Reconsider when: 某一种类型要在服务器上按自己的字段频繁筛选，或单种记录的写入量已经盖过其它所有类型。那时再为那一种单独加表，不提前拆。
 - Explicit non-goals: 不建 `trades`、`ideas`、`news` 三张业务表。不把 `payload` 展开成列。
 
@@ -206,18 +206,18 @@ CREATE INDEX idx_records_kind_id ON records (kind, id);
 
 `kind` 匹配 `^[a-z][a-z0-9_-]{0,31}$`。不符合的请求返回 `400`。
 
-已登记的类型会检查字段。没登记的类型直接收下，这就是「其它」的入口，不必为了一个新名字先发版。
+没登记的类型直接收下，这就是「其它」的入口，不必为了一个新名字先发版。
 
 | kind | 含义 | 必填 | payload |
 |---|---|---|---|
 | `note` | 随手记 | `body` | 可省略 |
 | `idea` | 想法 | `body` | 可省略 |
 | `news` | 新闻 | `body` | 可省略。若带了 `payload`，里面必须有非空 `title`。`url` 可有可无 |
-| `trade` | 交易记录 | `body` 和 `payload` | 必须含 `symbol`（非空字符串）、`side`（`buy` 或 `sell`）、`qty`（大于 0 的数）、`price`（大于等于 0 的数）。`currency`、`fee`、`account` 可有可无 |
+| `trade` | 交易记录 | `body` | 可省略。服务器不检查价格、数量、方向或代码。`kind` 只是标签 |
 
-分红、转账、申购不写入 `trade`。需要时用新的 `kind`，例如 `dividend`。没登记也能先写入。
+分红、转账、申购可以用 `trade`，也可以用新的 `kind`，例如 `dividend`。没登记也能先写入。
 
-`trade` 的 `body` 由调用方写，服务器不根据 `payload` 再生成一句。建议格式：`买入 100 股 600519，价格 1680 CNY`。模型先读这句话；要算账时再读 `payload`。
+交易记录的正文由调用方写。有没有价格都收下。
 
 ## 9. 接口
 
@@ -245,7 +245,7 @@ Content-Type: application/json
 错误响应统一为：
 
 ```json
-{"error": "validation_error", "message": "trade payload requires price"}
+{"error": "validation_error", "message": "body is required"}
 ```
 
 `error` 只用这几个值：`unauthorized`（401）、`validation_error`（400）、`payload_too_large`（413）、`not_found`（404）。`message` 给人看，调用方只依赖 `error` 和状态码。
@@ -287,7 +287,7 @@ Content-Type: application/json
 }
 ```
 
-`source`、`kind`、`body` 必填，且去掉首尾空白后不能是空字符串。`created_at`、`client_key`、`payload` 可省略，但 `trade` 不能省略 `payload`。`payload` 若出现，必须是 JSON 对象，不能是数组或字符串。
+`source`、`kind`、`body` 必填，且去掉首尾空白后不能是空字符串。`created_at`、`client_key`、`payload` 可省略，`trade` 也一样。`payload` 若出现，必须是 JSON 对象，不能是数组或字符串。服务器不检查 `trade` 的 `payload` 里有没有价格。
 
 成功插入返回 `201`，响应头带 `Location: /v1/records/1`，正文是完整记录，不是只含 `id`。
 
@@ -295,7 +295,7 @@ Content-Type: application/json
 
 校验失败返回 `400`。`body` 超过 64 KiB，或 `payload` 超过 16 KiB，返回 `413`。
 
-交易记录用同一个路径，只是 `kind` 和 `payload` 不同：
+交易记录用同一个路径，`kind` 写成 `trade`。不带 `payload` 也可以：
 
 ```json
 {
@@ -303,14 +303,7 @@ Content-Type: application/json
   "kind": "trade",
   "body": "买入 100 股 600519，价格 1680 CNY",
   "created_at": "2026-10-12T01:30:00Z",
-  "client_key": "trade:2026-10-12:600519:1",
-  "payload": {
-    "symbol": "600519",
-    "side": "buy",
-    "qty": 100,
-    "price": 1680,
-    "currency": "CNY"
-  }
+  "client_key": "trade:2026-10-12:600519:1"
 }
 ```
 
@@ -377,7 +370,7 @@ GET /v1/records?after_id=0&kind=trade&limit=50
 
 不包含：改造现有 Docker 程序，图形界面，模型调用，公网入口。
 
-验收时对同一路径 `POST` 一条 `note` 和一条 `trade`，重启容器后 `GET /v1/records` 仍能看到两条，`GET /v1/records/{id}` 能读到其中一条。`kind=trade` 时只有交易。缺 `price` 的交易返回 `400` 和 `validation_error`。没登记过的合法 `kind` 可以 `POST`。`GET /v1/kinds` 只列出已登记的四种。从家庭电脑经 SSH 转发调用同一个 `GET`，正文一致。错误令牌得到 `401`。重复的 `client_key` 不产生第二行。不存在的 id 得到 `404`。
+验收时对同一路径 `POST` 一条 `note` 和一条只有正文的 `trade`，重启容器后 `GET /v1/records` 仍能看到两条，`GET /v1/records/{id}` 能读到其中一条。`kind=trade` 时只有交易。没有价格的交易返回 `201`。没登记过的合法 `kind` 可以 `POST`。`GET /v1/kinds` 只列出已登记的四种。从家庭电脑经 SSH 转发调用同一个 `GET`，正文一致。错误令牌得到 `401`。重复的 `client_key` 不产生第二行。不存在的 id 得到 `404`。
 
 ### M2：一个现有程序真正写入
 
@@ -389,14 +382,14 @@ GET /v1/records?after_id=0&kind=trade&limit=50
 
 一个本地脚本记住游标，拉出新行，输出成适合粘贴给本地模型的文本。默认一个游标拉全部类型。脚本要能改成只拉一种 `kind`，并为这种类型单独记住游标。脚本不调用模型，不把结论上传。
 
-验收时，连续跑两次：第一次打出新行并记住游标，第二次没有新行时输出为空。把游标改回 0 后能再次打出旧行。只拉 `trade` 时，输出里有 `body`，也有 `payload` 里的价格和数量，且不含想法和新闻。
+验收时，连续跑两次：第一次打出新行并记住游标，第二次没有新行时输出为空。把游标改回 0 后能再次打出旧行。只拉 `trade` 时，输出里有这些记录的 `body`，且不含想法和新闻。
 
 ## 12. 测试与放行
 
 令牌、去重、游标和重启后的数据属于高风险行为。M1 先写失败测试，再写实现。至少覆盖：
 
 - 缺字段、空正文、超长正文、超大 `payload`
-- `trade` 缺少 `symbol`、`side`、`qty`、`price`，以及 `side` 不是 `buy` 或 `sell`
+- 只有正文的 `trade` 返回 `201`，不完整的 `payload` 也原样保存
 - `news` 带了 `payload` 但没有 `title`
 - 未登记但合法的 `kind` 可以写入；不合法的 `kind` 返回 `400`
 - 无令牌、错误令牌、`/health` 不要求令牌
@@ -426,7 +419,7 @@ M1 的完成以服务器上的验收为准，不以本机单元测试通过为�
 - 服务器记账，家庭电脑分析。
 - 一个 SQLite 文件，一个写入进程。
 - 只追加，用 `id` 续拉。
-- 多种数据类型共用一张表。`kind` 区分类型，`body` 给人读，`payload` 放结构化字段。
+- 多种数据类型共用一张表。`kind` 是标签，`body` 是正文。交易记录不检查价格等字段。
 - 存和取只有 `/v1/records` 这一套 REST 资源。
 - 第一版不监听公网。
 - 第一版不接入现有的两个 Docker 项目。
