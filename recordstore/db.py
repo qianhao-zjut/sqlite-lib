@@ -140,32 +140,36 @@ class Database:
             return None
         return to_record(row)
 
-    def list_records(self, *, after_id: int, limit: int, kind: str | None) -> dict:
+    def list_records(
+        self,
+        *,
+        after_id: int,
+        limit: int,
+        kind: str | None,
+        source: str | None = None,
+    ) -> dict:
+        clauses = ["id > ?"]
+        params: list = [after_id]
+        if kind is not None:
+            clauses.append("kind = ?")
+            params.append(kind)
+        if source is not None:
+            clauses.append("source = ?")
+            params.append(source)
+        params.append(limit)
         with self._lock:
-            if kind is None:
-                rows = self.conn.execute(
-                    f"""
-                    SELECT {_RECORD_COLUMNS}
-                    FROM records
-                    WHERE id > ?
-                    ORDER BY id ASC
-                    LIMIT ?
-                    """,
-                    (after_id, limit),
-                ).fetchall()
-            else:
-                rows = self.conn.execute(
-                    f"""
-                    SELECT {_RECORD_COLUMNS}
-                    FROM records
-                    WHERE id > ? AND kind = ?
-                    ORDER BY id ASC
-                    LIMIT ?
-                    """,
-                    (after_id, kind, limit),
-                ).fetchall()
+            rows = self.conn.execute(
+                f"""
+                SELECT {_RECORD_COLUMNS}
+                FROM records
+                WHERE {" AND ".join(clauses)}
+                ORDER BY id ASC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
         # Cursor is the max id in this page. An empty page keeps the caller's
-        # after_id, including when other kinds have higher ids.
+        # after_id, including when other kinds or sources have higher ids.
         if rows:
             next_after_id = rows[-1]["id"]
         else:

@@ -520,6 +520,41 @@ class ApiTest(unittest.TestCase):
         rest = self.request("GET", f"/v1/records?kind=trade&after_id={second}")
         self.assertEqual([row["id"] for row in rest.json["records"]], [third])
 
+    def test_source_filter_on_records(self):
+        manual_note = self.post({"source": "manual", "kind": "note", "body": "m1"})
+        heynote = self.post({"source": "heynote", "kind": "daily_job", "body": "h1"})
+        manual_trade = self.post({"source": "manual", "kind": "trade", "body": "m2"})
+        self.assertEqual(manual_note.status, 201)
+        self.assertEqual(heynote.status, 201)
+        self.assertEqual(manual_trade.status, 201)
+
+        page = self.request("GET", "/v1/records?source=manual")
+        self.assertEqual(page.status, 200)
+        self.assertEqual(
+            [row["id"] for row in page.json["records"]],
+            [manual_note.json["id"], manual_trade.json["id"]],
+        )
+        self.assertTrue(all(row["source"] == "manual" for row in page.json["records"]))
+        self.assertEqual(page.json["next_after_id"], manual_trade.json["id"])
+
+        page = self.request(
+            "GET",
+            f"/v1/records?source=manual&after_id={manual_note.json['id']}&limit=1",
+        )
+        self.assertEqual([row["id"] for row in page.json["records"]], [manual_trade.json["id"]])
+        self.assertEqual(page.json["next_after_id"], manual_trade.json["id"])
+
+        both = self.request("GET", "/v1/records?source=manual&kind=trade")
+        self.assertEqual([row["id"] for row in both.json["records"]], [manual_trade.json["id"]])
+
+        empty = self.request("GET", "/v1/records?source=nobody")
+        self.assertEqual(empty.status, 200)
+        self.assertEqual(empty.json, {"records": [], "next_after_id": 0})
+
+        blank = self.request("GET", "/v1/records?source=")
+        self.assertEqual(blank.status, 400)
+        self.assertEqual(blank.json["error"], "validation_error")
+
     def test_empty_filter_keeps_after_id(self):
         self.post({"source": "manual", "kind": "note", "body": "only a note"})
         page = self.request("GET", "/v1/records?kind=trade&after_id=0")

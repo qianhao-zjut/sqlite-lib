@@ -149,7 +149,13 @@ class RecordHandler(BaseHTTPRequestHandler):
         after_id = _query_int(self.path, "after_id", default=0, minimum=0, maximum=None)
         limit = _query_int(self.path, "limit", default=50, minimum=1, maximum=100)
         kind = _query_kind(self.path)
-        page = self.server.db.list_records(after_id=after_id, limit=limit, kind=kind)
+        source = _query_source(self.path)
+        page = self.server.db.list_records(
+            after_id=after_id,
+            limit=limit,
+            kind=kind,
+            source=source,
+        )
         self._send_json(200, page)
 
     def _get_record(self, record_id: int):

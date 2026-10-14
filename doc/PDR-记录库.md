@@ -309,9 +309,11 @@ Content-Type: application/json
 ```http
 GET /v1/records?after_id=0&limit=50
 GET /v1/records?after_id=0&kind=trade&limit=50
+GET /v1/records?after_id=0&source=manual&limit=50
+GET /v1/records?source=manual&kind=trade
 ```
 
-`after_id` 省略时按 0。返回 `id` 大于该值的记录，按 `id` 升序。`kind` 省略时返回所有类型。
+`after_id` 省略时按 0。返回 `id` 大于该值的记录，按 `id` 升序。`kind` 省略时不按类型过滤。`source` 省略时不按来源过滤。两个都带时必须同时匹配。`source` 是精确匹配，先去掉首尾空白；空白值返回 `400`。没写过的来源返回空数组，不是 `404`。
 
 ```json
 {
@@ -320,9 +322,9 @@ GET /v1/records?after_id=0&kind=trade&limit=50
 }
 ```
 
-`records` 里每项都是上面的完整记录。没有命中的新行时，`records` 为空数组，`next_after_id` 等于请求里的 `after_id`。不要因为库里已经有别的类型的更大 `id`，就把 `next_after_id` 推过去。否则带 `limit` 时会漏掉还没返回的同类型记录。
+`records` 里每项都是上面的完整记录。没有命中的新行时，`records` 为空数组，`next_after_id` 等于请求里的 `after_id`。不要因为库里已经有别的类型或别的来源的更大 `id`，就把 `next_after_id` 推过去。否则带 `limit` 时会漏掉还没返回的匹配记录。
 
-`next_after_id` 是这个列表响应里的继续位置，调用方下次把它放回 `after_id`。服务器不保存调用方的进度。混在一起读，就记一个数，请求里不带 `kind`。只读交易或只读想法，就按 `kind` 各记一个数。要重读时，把本地的数调小或调回 0。
+`next_after_id` 是这个列表响应里的继续位置，调用方下次把它放回 `after_id`。服务器不保存调用方的进度。混在一起读，就记一个数，请求里不带 `kind` 和 `source`。只读交易、只读某个来源，或同时限定类型和来源，就为这个组合各记一个数。要重读时，把本地的数调小或调回 0。
 
 ### GET /v1/records/{id}
 
@@ -404,6 +406,7 @@ GET /v1/kinds?source=heynote
 - 相同 `client_key` 只有一行，且不分类型
 - `after_id` 分页顺序和 `next_after_id`
 - `kind=trade` 时不返回其它类型；本页之间夹着别的类型时，不能把那些类型的 id 跳过到漏掉下一条交易
+- `source=manual` 时不返回其它来源；可与 `kind` 同时使用。夹着别的来源时，不能把那些 id 跳过到漏掉下一条匹配记录
 - 过滤结果为空时，`next_after_id` 保持为请求中的 `after_id`
 - 进程重启后行还在，`payload` 与写入时一致
 - 备份快照能用 SQLite 打开，并且行数与原库一致
