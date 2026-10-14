@@ -77,7 +77,7 @@ class RecordHandler(BaseHTTPRequestHandler):
                 self._list_records()
                 return
             if self.command == "GET" and path == "/v1/kinds":
-                self._send_json(200, {"kinds": list(REGISTERED_KINDS)})
+                self._list_kinds()
                 return
             match = _ID_PATH.fullmatch(path)
             if self.command == "GET" and match:
@@ -117,6 +117,33 @@ class RecordHandler(BaseHTTPRequestHandler):
         )
         headers = {"Location": f"/v1/records/{record['id']}"} if created else None
         self._send_json(201 if created else 200, record, headers, record_id=record["id"])
+
+    def _list_kinds(self):
+        source = _query_source(self.path)
+        written = self.server.db.distinct_kind_sources()
+        registered = [item["kind"] for item in REGISTERED_KINDS]
+        payload = {item["kind"]: item["payload"] for item in REGISTERED_KINDS}
+        if source is None:
+            names = list(registered)
+            names.extend(sorted(kind for kind in written if kind not in payload))
+        else:
+            names = [kind for kind in registered if source in written.get(kind, [])]
+            names.extend(
+                sorted(
+                    kind
+                    for kind, sources in written.items()
+                    if kind not in payload and source in sources
+                )
+            )
+        kinds = [
+            {
+                "kind": kind,
+                "payload": payload.get(kind, "optional"),
+                "sources": written.get(kind, []),
+            }
+            for kind in names
+        ]
+        self._send_json(200, {"kinds": kinds})
 
     def _list_records(self):
         after_id = _query_int(self.path, "after_id", default=0, minimum=0, maximum=None)
@@ -204,6 +231,16 @@ def _query_int(path: str, name: str, *, default: int, minimum: int, maximum: int
     if value > _SQLITE_INT_MAX or value < minimum or (maximum is not None and value > maximum):
         raise AppError(400, "validation_error", f"{name} is out of range")
     return value
+
+
+def _query_source(path: str):
+    values = _query_values(path)
+    if "source" not in values:
+        return None
+    source = values["source"][0].strip()
+    if source == "":
+        raise AppError(400, "validation_error", "source is required")
+    return source
 
 
 def _query_kind(path: str):

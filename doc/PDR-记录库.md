@@ -116,7 +116,7 @@ MySQL 同样不合适。它是常驻服务，要用户、端口和自己的内�
 
 - Problem and constraints: 写入方有小程序和工作电脑，读取方是家庭电脑，类型有随手记、想法、新闻、交易和未登记类型。若把「存」和「拉」写成两套说明，调用方会各自发明路径。
 - Candidates: 每种类型一组路径，例如 `/v1/trades`；一个集合 `/v1/records`，用 `kind` 区分；另做一套仅供同步的私有接口。
-- Current recommendation: 只有资源 `records`。创建用 `POST /v1/records`，列出用 `GET /v1/records`，读取一条用 `GET /v1/records/{id}`。已登记类型的目录用 `GET /v1/kinds`。不提供 `PUT`、`PATCH`、`DELETE`。
+- Current recommendation: 只有资源 `records`。创建用 `POST /v1/records`，列出用 `GET /v1/records`，读取一条用 `GET /v1/records/{id}`。类型和来源的目录用 `GET /v1/kinds`。不提供 `PUT`、`PATCH`、`DELETE`。
 - Why this fits now: 调用方学习一个集合就够。按类型过滤是查询参数，不是另一套接口。`after_id` 也只是这个集合上的查询参数，用来从上次看到的 id 之后继续取。
 - Reconsider when: 某一种类型的字段多到无法放进同一个 JSON 表示，或确实需要更新已有行。
 - Explicit non-goals: 不为 `note`、`idea`、`news`、`trade` 各做一组 CRUD。不增加 `/pull`、`/store`、`/sync` 这类动词路径。
@@ -234,7 +234,7 @@ Content-Type: application/json
 | `POST` | `/v1/records` | 新增一条记录 |
 | `GET` | `/v1/records` | 列出记录 |
 | `GET` | `/v1/records/{id}` | 读取一条 |
-| `GET` | `/v1/kinds` | 列出已登记类型 |
+| `GET` | `/v1/kinds` | 列出已登记类型，以及库里出现过的类型和来源 |
 | `GET` | `/health` | 进程是否在听 |
 
 没有 `PUT`、`PATCH`、`DELETE`。写错了再 `POST` 一条新记录。
@@ -330,20 +330,30 @@ GET /v1/records?after_id=0&kind=trade&limit=50
 
 ### GET /v1/kinds
 
-返回已登记类型，不扫描库里出现过的未登记 `kind`。
+```http
+GET /v1/kinds
+GET /v1/kinds?source=heynote
+```
+
+列出已登记类型，以及库里已经出现过的未登记类型。每一项带上写过这种类型的来源。来源不设枚举：谁写入过，下次查询就出现，不必为新来源改代码。
 
 ```json
 {
   "kinds": [
-    {"kind": "note", "payload": "optional"},
-    {"kind": "idea", "payload": "optional"},
-    {"kind": "news", "payload": "optional"},
-    {"kind": "trade", "payload": "required"}
+    {"kind": "note", "payload": "optional", "sources": ["heynote", "manual"]},
+    {"kind": "idea", "payload": "optional", "sources": []},
+    {"kind": "news", "payload": "optional", "sources": []},
+    {"kind": "trade", "payload": "optional", "sources": []},
+    {"kind": "daily_job", "payload": "optional", "sources": ["heynote"]}
   ]
 }
 ```
 
-未登记类型仍然可以 `POST`。这个接口只告诉调用方哪些类型会做字段检查。
+`source` 省略时返回上面这一整份目录。已登记的四种始终在前，顺序固定；还没有记录时 `sources` 为空数组。未登记类型排在后面，按 `kind` 字典序，只有库里出现过才列出。`payload` 仍表示字段检查：已登记类型用登记时的规则，未登记类型是 `optional`。
+
+`source` 是精确匹配，先去掉首尾空白。带了这个参数时，只返回该来源写过的类型；这个来源还没写过任何记录时，`kinds` 为空数组。每一项的 `sources` 仍是写过该类型的全部来源，按字典序，不因为过滤就只剩这一个。同一种类型可以有多个来源，所以字段是数组，不是单个 `source`。
+
+空白的 `source` 返回 `400`。未登记类型仍然可以 `POST`。
 
 ### GET /health
 
@@ -367,7 +377,7 @@ GET /v1/records?after_id=0&kind=trade&limit=50
 
 不包含：改造现有 Docker 程序，图形界面，模型调用，公网入口。
 
-验收时对同一路径 `POST` 一条 `note` 和一条只有正文的 `trade`，请求不带 `Authorization`。重启容器后 `GET /v1/records` 仍能看到两条，`GET /v1/records/{id}` 能读到其中一条。`kind=trade` 时只有交易。没有价格的交易返回 `201`。没登记过的合法 `kind` 可以 `POST`。`GET /v1/kinds` 只列出已登记的四种。从另一台电脑直接请求主机 `8787`，正文一致。重复的 `client_key` 不产生第二行。不存在的 id 得到 `404`。
+验收时对同一路径 `POST` 一条 `note` 和一条只有正文的 `trade`，请求不带 `Authorization`。重启容器后 `GET /v1/records` 仍能看到两条，`GET /v1/records/{id}` 能读到其中一条。`kind=trade` 时只有交易。没有价格的交易返回 `201`。没登记过的合法 `kind` 可以 `POST`。`GET /v1/kinds` 列出已登记的四种，并带上库里出现过的类型及其来源。从另一台电脑直接请求主机 `8787`，正文一致。重复的 `client_key` 不产生第二行。不存在的 id 得到 `404`。
 
 ### M2：一个现有程序真正写入
 
@@ -389,6 +399,7 @@ GET /v1/records?after_id=0&kind=trade&limit=50
 - 只有正文的 `trade` 返回 `201`，不完整的 `payload` 也原样保存
 - `news` 带了 `payload` 但没有 `title`
 - 未登记但合法的 `kind` 可以写入；不合法的 `kind` 返回 `400`
+- `GET /v1/kinds` 包含已登记类型和库里出现过的未登记类型，每项带 `sources`；`source` 只返回该来源写过的类型，没写过时 `kinds` 为空数组
 - 不带 `Authorization` 也能新增和查询；`/health` 返回 `{"ok": true}`
 - 相同 `client_key` 只有一行，且不分类型
 - `after_id` 分页顺序和 `next_after_id`

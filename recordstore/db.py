@@ -175,6 +175,20 @@ class Database:
             "next_after_id": next_after_id,
         }
 
+    def distinct_kind_sources(self) -> dict[str, list[str]]:
+        with self._lock:
+            rows = self.conn.execute(
+                """
+                SELECT kind, source
+                FROM records
+                GROUP BY kind, source
+                """
+            ).fetchall()
+        grouped: dict[str, set[str]] = {}
+        for row in rows:
+            grouped.setdefault(row["kind"], set()).add(row["source"])
+        return {kind: sorted(sources) for kind, sources in grouped.items()}
+
     def _find_client_key(self, client_key: str):
         return self.conn.execute(
             f"SELECT {_RECORD_COLUMNS} FROM records WHERE client_key = ?",

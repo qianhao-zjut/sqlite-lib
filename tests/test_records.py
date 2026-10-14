@@ -309,19 +309,65 @@ class ApiTest(unittest.TestCase):
 
         kinds = self.request("GET", "/v1/kinds")
         self.assertEqual(kinds.status, 200)
+        names = [item["kind"] for item in kinds.json["kinds"]]
+        self.assertEqual(names[:4], ["note", "idea", "news", "trade"])
+        by_name = {item["kind"]: item for item in kinds.json["kinds"]}
+        self.assertEqual(by_name["dividend"]["payload"], "optional")
+        self.assertEqual(by_name["dividend"]["sources"], ["manual"])
+        self.assertEqual(by_name["a" * 32]["sources"], ["manual"])
+
+    def test_kinds_lists_sources_and_filters_by_source(self):
+        empty = self.request("GET", "/v1/kinds")
+        self.assertEqual(empty.status, 200)
         self.assertEqual(
-            kinds.json,
+            empty.json,
             {
                 "kinds": [
-                    {"kind": "note", "payload": "optional"},
-                    {"kind": "idea", "payload": "optional"},
-                    {"kind": "news", "payload": "optional"},
-                    {"kind": "trade", "payload": "optional"},
+                    {"kind": "note", "payload": "optional", "sources": []},
+                    {"kind": "idea", "payload": "optional", "sources": []},
+                    {"kind": "news", "payload": "optional", "sources": []},
+                    {"kind": "trade", "payload": "optional", "sources": []},
                 ]
             },
         )
-        names = [item["kind"] for item in kinds.json["kinds"]]
-        self.assertNotIn("dividend", names)
+
+        self.post({"source": "heynote", "kind": "daily_job", "body": "今天的工作"})
+        self.post({"source": "manual", "kind": "note", "body": "一条随手记"})
+        self.post({"source": "heynote", "kind": "note", "body": "另一条"})
+        self.post({"source": "other-app", "kind": "daily_job", "body": "同一类型，另一个来源"})
+
+        listed = self.request("GET", "/v1/kinds")
+        self.assertEqual(listed.status, 200)
+        self.assertEqual(
+            listed.json["kinds"],
+            [
+                {"kind": "note", "payload": "optional", "sources": ["heynote", "manual"]},
+                {"kind": "idea", "payload": "optional", "sources": []},
+                {"kind": "news", "payload": "optional", "sources": []},
+                {"kind": "trade", "payload": "optional", "sources": []},
+                {"kind": "daily_job", "payload": "optional", "sources": ["heynote", "other-app"]},
+            ],
+        )
+
+        filtered = self.request("GET", "/v1/kinds?source=heynote")
+        self.assertEqual(filtered.status, 200)
+        self.assertEqual(
+            [item["kind"] for item in filtered.json["kinds"]],
+            ["note", "daily_job"],
+        )
+        self.assertEqual(filtered.json["kinds"][0]["sources"], ["heynote", "manual"])
+
+        missing = self.request("GET", "/v1/kinds?source=nobody")
+        self.assertEqual(missing.status, 200)
+        self.assertEqual(missing.json, {"kinds": []})
+
+        blank = self.request("GET", "/v1/kinds?source=")
+        self.assertEqual(blank.status, 400)
+        self.assertEqual(blank.json["error"], "validation_error")
+
+        spaces = self.request("GET", "/v1/kinds?source=%20%20")
+        self.assertEqual(spaces.status, 400)
+        self.assertEqual(spaces.json["error"], "validation_error")
 
     def test_open_access_and_health(self):
         health = self.request("GET", "/health")

@@ -56,7 +56,7 @@ curl -sS "http://<server>:8787/v1/records?after_id=0&limit=50"
 | `POST` | `/v1/records` | 新增。`201`，`Location` 指向新记录。`client_key` 已存在时 `200` 并返回原来的记录 |
 | `GET` | `/v1/records` | `after_id` 默认 0，`limit` 默认 50、最大 100，可加 `kind` |
 | `GET` | `/v1/records/{id}` | 没有这条时 `404` |
-| `GET` | `/v1/kinds` | 只列出已登记的 `note`、`idea`、`news`、`trade` |
+| `GET` | `/v1/kinds` | 已登记类型，加上库里出现过的类型。每项有 `sources`。可加 `source` 只看该来源写过的类型 |
 | `GET` | `/health` | 返回 `{"ok": true}` |
 
 没有 `PUT`、`PATCH`、`DELETE`。`limit` 不在 1 到 100 之间时返回 `400`。
