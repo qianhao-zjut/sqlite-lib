@@ -84,7 +84,7 @@ OK
 
 ## 随后改动：记录列表按来源筛选
 
-2026-10-14：`GET /v1/records` 接受 `source`。省略时不按来源过滤；与 `kind` 同时出现时必须都匹配。空结果不推进 `next_after_id`。这一版还没部署。
+2026-10-14：`GET /v1/records` 接受 `source`。省略时不按来源过滤；与 `kind` 同时出现时必须都匹配。空结果不推进 `next_after_id`。已部署。远程核对：`source=manual` 只返回 5 条 manual 记录，`source=heynote&kind=daily_job` 只返回 id 7，全部记录仍是 29 条。
 
 ## 下一步
 
